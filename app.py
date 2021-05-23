@@ -9,6 +9,7 @@ from dash.dependencies import Input, Output, State
 import plotly.express as px
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
+from plotly.validators.scatter.marker import SymbolValidator
 
 #tlo 051c28 051628
 
@@ -129,7 +130,7 @@ app.layout = html.Div(children=[
             dcc.Graph(id="indexes",figure={"layout":{"height": 200}}, config={
                     'displayModeBar': False})],style={'float':'left',"height":"200px","width":"70%",
                                                       "margin-top":"25px","margin-left":"25px"}),
-        html.Div(className="tile", children=[dcc.Graph(figure={"layout": {"height": 300}}, config={
+        html.Div(className="tile", children=[dcc.Graph(id='macd', config={
             'displayModeBar': False})],
                  style={'width': '40%', "float": "left", "height": "300px", "margin-top": "25px"}),
         html.Div(className="tile", children=[
@@ -160,8 +161,13 @@ app.layout = html.Div(children=[
     [Input('table', 'active_cell')]
 )
 def update_graph(row):
-    sub_df = df.loc[df['Name'] == pct_change_df.drop_duplicates().to_dict('records')[row['row']]['Name']]
-    fig = make_subplots(rows=1, cols=3)
+    if row is None:
+        currency = 'Aave'
+    else:
+        currency = pct_change_df.drop_duplicates().to_dict('records')[row['row']]['Name']
+    sub_df = df.loc[df['Name'] == currency]
+
+    fig = make_subplots(rows=1, cols=3, shared_xaxes=True)
     moving_avg = sub_df['Close'].rolling(center=False, window=40).mean().dropna().reset_index(drop=True)
     fig.append_trace(go.Scatter(y=moving_avg, line=dict(color='#00628b')), row=1, col=1)
     on_balance_value = (np.sign(sub_df['Close'].diff()) * sub_df['Volume']).fillna(0).cumsum()
@@ -178,6 +184,7 @@ def update_graph(row):
         template='plotly_dark',
         height = 200,
         showlegend=False,
+        hovermode='x',
         margin=dict(
             l=0,  # left margin
             r=0,  # right margin
@@ -194,7 +201,12 @@ def update_graph(row):
     [Input('table', 'active_cell')]
 )
 def update_figure(row):
-    sub_df = df.loc[df['Name'] == pct_change_df.drop_duplicates().to_dict('records')[row['row']]['Name']]
+    if row is None:
+        currency = 'Aave'
+    else:
+        currency = pct_change_df.drop_duplicates().to_dict('records')[row['row']]['Name']
+    sub_df = df.loc[df['Name'] == currency]
+
     # Create figure with secondary y-axis
     fig = make_subplots(
         specs=[[{"secondary_y": True}]])
@@ -207,7 +219,7 @@ def update_figure(row):
             high=sub_df['High'],
             low=sub_df['Low'],
             close=sub_df['Close'],
-            name=pct_change_df.drop_duplicates().to_dict('records')[row['row']]['Name']),
+            name=currency),
         secondary_y=True)
 
     # include a go.Bar trace for volumes
@@ -234,6 +246,7 @@ def update_figure(row):
         {'plot_bgcolor': 'rgba(0, 0, 0, 0)',
          'paper_bgcolor': 'rgba(0, 0, 0, 0)'},
         template='plotly_dark',
+        hovermode='x',
         barmode='group',
         bargroupgap=0,
         bargap=0,
@@ -260,6 +273,127 @@ def update_figure(row):
         title_text="Price in USD",
         secondary_y=True)
     return fig
+
+@app.callback(
+    Output('macd', 'figure'),
+    [Input('table', 'active_cell')]
+)
+def update_macd(row):
+    if row is None:
+        currency = 'Aave'
+    else:
+        currency = pct_change_df.drop_duplicates().to_dict('records')[row['row']]['Name']
+    sub_df = df.loc[df['Name'] == currency]
+
+    shortEMA = sub_df.Close.ewm(span=12, adjust=False).mean()
+    longEMA = sub_df.Close.ewm(span=26, adjust=False).mean()
+    sub_df['macd'] = shortEMA - longEMA
+    sub_df['signal'] = sub_df['macd'].ewm(span=9, adjust=False).mean()
+    idx = np.argwhere(np.diff(np.sign(    sub_df['signal'] -     sub_df['macd']))).flatten()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=sub_df['Date'], y= sub_df['macd'], name='MACD',
+                             line=dict(color='#00628b')))
+    fig.add_trace(go.Scatter(x=sub_df['Date'], y=sub_df['signal'], name='Signal line',
+                             line=dict(color='#E8B34A')))
+
+    buy_sell = sub_df.loc[idx]
+    arrow = []
+    x = buy_sell['macd'][0] < buy_sell['signal'][0]
+    for i in range(len(buy_sell)):
+        arrow.append(x)
+        x = not x
+    fig.add_trace(go.Scatter(mode="markers", x=buy_sell['Date'], y=buy_sell['macd'],
+                             marker_symbol=['arrow-up' if i else 'arrow-down' for i in arrow],
+                             marker_color=["#3D9970" if i else '#FF3131' for i in arrow],
+                             marker_size=9,
+                             hovertemplate=['<extra></extra>recommendation to buy' if i else ' <extra></extra>recommendation to sell' for i in arrow],
+                             showlegend=False))
+
+    fig.add_trace(
+        go.Bar(
+            x=sub_df['Date'],
+            y=sub_df['macd'] - sub_df['signal'],
+            opacity=0.5,
+            marker={'color': '#00628B', 'line_color': '#00628B'},
+            name="Difference"))
+    fig.update_layout(
+        title="MACD Indicator",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        template='plotly_dark',
+        hovermode='x',
+        height=250,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        margin=dict(
+            l=25,  # left margin
+            r=25,  # right margin
+            b=25,  # bottom margin
+            t=25,  # top margin)
+        )
+    )
+    fig.update_yaxes(visible=False)
+    return fig
+
+### INFORMATION SECTION CALLBACK ###
+@app.callback(
+    Output('about', 'children'),
+    [
+        Input('candle', 'hoverData'),
+        Input('macd', 'hoverData'),
+        Input('indexes', 'hoverData'),
+    ],
+    prevent_initial_call=True
+)
+def info_change(in1, in2, in3):
+    ctx = dash.callback_context
+
+    if not ctx.triggered:
+        input_id = 'No clicks yet'
+    else:
+        input_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    if input_id == 'candle':
+        children = [
+            html.H5("CANDLESTICK CHART", style={"text-align": "center"}),
+            html.P("It is perhaps the most common visual aid for decision making in stock trading."
+                   " Looking at a candlestick, one can identify an asset’s opening and closing prices, highs and lows, and overall range for a specific time frame."
+                   " Candlestick charts serve as a cornerstone of technical analysis. For example, when the bar is green and high relative to other time periods,"
+                   " it means buyers are very bullish. The opposite is true for a red bar."),
+            html.P("Created by: Mikołaj Kruś & Maciej Filanowicz", style={"text-align": "right"})
+        ]
+        return children
+    if input_id == 'macd':
+        children = [
+            html.H5("MOVING AVERAGE CONVERGENCE/DIVERGENCE", style={"text-align": "center"}),
+            html.P(
+                "The MACD indicator is a collection of three time series calculated from historical price data, most often the closing price."
+                " Exponential moving averages highlight recent changes in a stock's price. By comparing EMAs of different lengths,"
+                " the MACD series gauges changes in the trend of a stock."
+                " It is recommended to buy if the MACD line crosses up through the signal line, or to sell if it crosses down through the signal line."),
+            html.P("Created by: Mikołaj Kruś & Maciej Filanowicz", style={"text-align": "right"})
+        ]
+        return children
+
+    if input_id == 'indexes':
+        children = [
+            html.H5("TECHNICAL INDICATORS", style={"text-align": "center"}),
+            html.P(
+                "MOVING AVERAGE: Given a series of numbers and a fixed subset size, the first element of the moving average is obtained by taking the average of the initial fixed subset of the number series."
+                " Then the subset is modified by excluding the first number of the series and including the next value in the subset."),
+            html.P(
+                "ON_BALANCE VOLUME: When prices are going up, OBV should be going up too, and when prices make a new rally high, then OBV should too."
+                " If OBV fails to go past its previous rally high, then this is a negative divergence, suggesting a weak move."),
+            html.P(
+                "RELATIVE STRENGTH INDEX: The RSI computes momentum as the ratio of higher closes to lower closes:"
+                " stocks which have had more or stronger positive changes have a higher RSI than stocks which have had more or stronger negative changes."),
+            html.P("Created by: Mikołaj Kruś & Maciej Filanowicz", style={"text-align": "right"})
+        ]
+        return children
 
 # Run the app
 if __name__ == '__main__':
